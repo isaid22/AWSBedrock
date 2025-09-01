@@ -1,0 +1,4 @@
+region: us-east-1
+model_id: amazon.titan-embed-text-v1
+embedding_length: 1536
+input_text: "Discover how we've streamlined homebuying. We've made it simpler and easier to get your next home."
