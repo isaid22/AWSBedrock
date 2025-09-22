@@ -1,0 +1,28 @@
+models:
+	- name: nova-micro
+	  version: nova-micro-v1
+	  inverenceConfig: {
+	  	"maxTokens": 1024,
+	  	"stopSequence" : ["```json"],
+	  	"temperature": 0.9,
+	  	"topP": 0.9
+	  }
+
+	- name: nova-premier
+	  version: nova-premier-v1
+	  inverenceConfig: {
+	  	"maxTokens": 1024,
+	  	"stopSequence" : ["```json"],
+	  	"temperature": 0.9,
+	  	"topP": 0.9
+	  }
+prompt: 
+	- name: system_prompt
+	  template: "You are an expert in promoting banking customer with either home mortgage purchase, refinancing or Home Equity Line of Credit. I need you to come up with 10 brief and powerful messages, each message have at most twenty words. Use courteous and professional tone. Do not make any offers or mention anything numeric, such as years, terms, interest rates, fees."
+	- name: user_prompt_for_purchase
+	  template: "This message is for user that is interested in purchase a home through finance"
+	- name: user_prompt_for_refinance
+	  template: "This message is for user that is interested in refinance a mortgage"
+  - name: user_prompt_for_home_equity  
+	  template: "This message is for user that is interested in home equity loan"
+    
