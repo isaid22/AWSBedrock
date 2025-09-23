@@ -9,7 +9,8 @@ from botocore.exceptions import ClientError
 import time as _time
 import random as _random
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import math as _math
+import torch
+import torch.nn.functional as F
 
 
 def _load_yaml_allow_tabs(file_path: str | Path) -> dict:
@@ -66,10 +67,35 @@ def build_concatenated_prompt_from_yaml(config_path: str | Path,
 	return separator.join(parts)
 
 
-def get_titan_embedding(text: str, model_id: str = "amazon.titan-embed-text-v1", region: str = "us-east-1") -> list:
-	"""Return the embedding vector for the given text using Titan Embeddings."""
+def get_titan_embedding(text: str, model_id: str = "amazon.titan-embed-text-v1", region: str = "us-east-1", dimensions: int = 1536) -> list:
+	"""Return the embedding vector for the given text using Titan Embeddings.
+	
+	Args:
+		text: Input text to embed.
+		model_id: Titan embedding model id.
+		region: AWS region for Bedrock.
+		dimensions: Output dimension size. Supported values depend on model:
+			- amazon.titan-embed-text-v1: 1536 (fixed)
+			- amazon.titan-embed-text-v2:0: 256, 512, 1024 (default: 1024)
+	
+	Returns:
+		List of float values representing the embedding vector.
+	"""
 	client = boto3.client("bedrock-runtime", region_name=region)
-	body = json.dumps({"inputText": text})
+	
+	# Build request body based on model capabilities
+	if "v2" in model_id:
+		# Titan v2 supports configurable dimensions
+		body = json.dumps({
+			"inputText": text,
+			"dimensions": dimensions
+		})
+	else:
+		# Titan v1 has fixed 1536 dimensions
+		if dimensions != 1536:
+			print(f"Warning: Titan v1 only supports 1536 dimensions, ignoring dimensions={dimensions}")
+		body = json.dumps({"inputText": text})
+	
 	resp = client.invoke_model(
 		modelId=model_id,
 		body=body,
@@ -84,6 +110,7 @@ def get_titan_embeddings_batch(
 	texts: list,
 	model_id: str = "amazon.titan-embed-text-v1",
 	region: str = "us-east-1",
+	dimensions: int = 1536,
 	max_workers: int = 4,
 	retries: int = 2,
 	base_backoff: float = 0.5,
@@ -94,6 +121,9 @@ def get_titan_embeddings_batch(
 		texts: list of strings to embed.
 		model_id: Titan embedding model id.
 		region: AWS region for Bedrock.
+		dimensions: Output dimension size. Supported values depend on model:
+			- amazon.titan-embed-text-v1: 1536 (fixed)
+			- amazon.titan-embed-text-v2:0: 256, 512, 1024 (default: 1024)
 		max_workers: parallel requests.
 		retries: retry attempts per item on throttling/transient errors.
 		base_backoff: seconds for exponential backoff base.
@@ -113,7 +143,19 @@ def get_titan_embeddings_batch(
 		attempt = 0
 		while True:
 			try:
-				body = json.dumps({"inputText": text})
+				# Build request body based on model capabilities
+				if "v2" in model_id:
+					# Titan v2 supports configurable dimensions
+					body = json.dumps({
+						"inputText": text,
+						"dimensions": dimensions
+					})
+				else:
+					# Titan v1 has fixed 1536 dimensions
+					if dimensions != 1536 and idx == 0:  # Only warn once
+						print(f"Warning: Titan v1 only supports 1536 dimensions, ignoring dimensions={dimensions}")
+					body = json.dumps({"inputText": text})
+				
 				resp = client.invoke_model(
 					modelId=model_id,
 					body=body,
@@ -149,34 +191,46 @@ def get_titan_embeddings_batch(
 	return results
 
 
-def _dot(a: list, b: list) -> float:
-	return float(sum(x * y for x, y in zip(a, b)))
-
-
-def _norm(a: list) -> float:
-	return _math.sqrt(float(sum(x * x for x in a)))
-
-
 def cosine_similarity(v1: list, v2: list) -> float:
-	"""Compute cosine similarity between two vectors. Returns 0.0 if any norm is zero."""
+	"""Compute cosine similarity between two vectors using PyTorch. Returns 0.0 if any norm is zero."""
 	if not v1 or not v2:
 		return 0.0
-	den = _norm(v1) * _norm(v2)
-	if den == 0:
-		return 0.0
-	return _dot(v1, v2) / den
+	
+	# Convert lists to PyTorch tensors
+	tensor1 = torch.tensor(v1, dtype=torch.float32)
+	tensor2 = torch.tensor(v2, dtype=torch.float32)
+	
+	# Use PyTorch's cosine similarity function
+	# F.cosine_similarity returns a tensor, so we convert to float
+	similarity = F.cosine_similarity(tensor1.unsqueeze(0), tensor2.unsqueeze(0), dim=1)
+	return float(similarity.item())
 
 
 def rank_by_cosine(reference_vec: list, candidate_vecs: list[list], candidate_texts: list[str]):
-	"""Return candidates ranked by cosine similarity to reference_vec (desc)."""
+	"""Return candidates ranked by cosine similarity to reference_vec (desc).
+	
+	Uses PyTorch for efficient batch computation of cosine similarities.
+	"""
+	if not candidate_vecs or not candidate_texts:
+		return []
+	
+	# Convert to PyTorch tensors for batch processing
+	ref_tensor = torch.tensor(reference_vec, dtype=torch.float32).unsqueeze(0)  # Shape: (1, dim)
+	candidate_tensor = torch.stack([torch.tensor(vec, dtype=torch.float32) for vec in candidate_vecs])  # Shape: (n, dim)
+	
+	# Compute cosine similarities for all candidates at once
+	similarities = F.cosine_similarity(ref_tensor, candidate_tensor, dim=1)
+	
+	# Create result items with similarity scores
 	items = []
-	for i, (vec, text) in enumerate(zip(candidate_vecs, candidate_texts)):
-		sim = cosine_similarity(reference_vec, vec)
+	for i, (sim, text) in enumerate(zip(similarities.tolist(), candidate_texts)):
 		items.append({
 			"index": i,
 			"message": text,
 			"cosine_similarity": sim,
 		})
+	
+	# Sort by similarity in descending order
 	items.sort(key=lambda x: x["cosine_similarity"], reverse=True)
 	return items
 
@@ -201,26 +255,44 @@ if __name__ == "__main__":
 	print(prompt)
 	print(type(prompt))
 
-	# Single embedding demo
-	emb = get_titan_embedding(prompt)
-	print(f"Embedding length: {len(emb)}")
-	print(f"First 8 dims: {emb[:8]}")
+	# Test different embedding dimensions and models
+	test_configs = [
+		# {"model_id": "amazon.titan-embed-text-v1", "dimensions": 1536, "name": "Titan v1 (1536)"},
+		# Uncomment these if you have access to Titan v2:
+		{"model_id": "amazon.titan-embed-text-v2:0", "dimensions": 256, "name": "Titan v2 (256)"},
+		# {"model_id": "amazon.titan-embed-text-v2:0", "dimensions": 512, "name": "Titan v2 (512)"},
+		# {"model_id": "amazon.titan-embed-text-v2:0", "dimensions": 1024, "name": "Titan v2 (1024)"},
+	]
+	
+	for config in test_configs:
+		print(f"\n{'='*60}")
+		print(f"Testing {config['name']}")
+		print(f"{'='*60}")
+		
+		try:
+			# Single embedding demo
+			emb = get_titan_embedding(prompt, model_id=config["model_id"], dimensions=config["dimensions"])
+			print(f"Embedding length: {len(emb)}")
+			print(f"First 8 dims: {emb[:8]}")
 
-	# Batch embedding demo: concatenated prompt + 10 candidates = 11 embeddings
-	texts = [prompt] + candidate_messages
-	vecs = get_titan_embeddings_batch(texts)
-	print(f"Batch count: {len(vecs)}")
-	print(f"Batch lens: {[len(v) for v in vecs]}")
-	print(type(vecs))
-	print(vecs[0])
+			# Batch embedding demo: concatenated prompt + 10 candidates
+			texts = [prompt] + candidate_messages
+			vecs = get_titan_embeddings_batch(texts, model_id=config["model_id"], dimensions=config["dimensions"])
+			print(f"Batch count: {len(vecs)}")
+			print(f"Batch lens: {[len(v) for v in vecs]}")
 
-	# Cosine similarity ranking: use the first vector (concatenated prompt) as reference
-	ref_vec = vecs[0]
-	cand_vecs = vecs[1:]
-	ranked = rank_by_cosine(ref_vec, cand_vecs, candidate_messages)
+			# Cosine similarity ranking: use the first vector (concatenated prompt) as reference
+			ref_vec = vecs[0]
+			cand_vecs = vecs[1:]
+			ranked = rank_by_cosine(ref_vec, cand_vecs, candidate_messages)
 
-	# Pretty-print as JSON with rounded similarities
-	for item in ranked:
-		item["cosine_similarity"] = round(item["cosine_similarity"], 6)
-	print("\nRanked similarities (JSON):")
-	print(json.dumps(ranked, indent=2))
+			# Pretty-print as JSON with rounded similarities
+			for item in ranked:
+				item["cosine_similarity"] = round(item["cosine_similarity"], 6)
+			print(f"\nTop 3 ranked similarities for {config['name']}:")
+			for i, item in enumerate(ranked[:3]):
+				print(f"  {i+1}. {item['message'][:50]}... (sim: {item['cosine_similarity']})")
+				
+		except Exception as e:
+			print(f"Error with {config['name']}: {e}")
+			continue

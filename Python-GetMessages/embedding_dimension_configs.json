@@ -1,0 +1,34 @@
+{
+  "embedding_configs": [
+    {
+      "name": "titan_v1_default",
+      "model_id": "amazon.titan-embed-text-v1",
+      "dimensions": 1536,
+      "description": "Standard Titan v1 with 1536 dimensions"
+    },
+    {
+      "name": "titan_v2_small",
+      "model_id": "amazon.titan-embed-text-v2:0",
+      "dimensions": 256,
+      "description": "Titan v2 with reduced dimensions for speed"
+    },
+    {
+      "name": "titan_v2_medium",
+      "model_id": "amazon.titan-embed-text-v2:0",
+      "dimensions": 512,
+      "description": "Titan v2 with balanced dimensions"
+    },
+    {
+      "name": "titan_v2_large",
+      "model_id": "amazon.titan-embed-text-v2:0",
+      "dimensions": 1024,
+      "description": "Titan v2 with high-quality dimensions"
+    }
+  ],
+  "usage_notes": [
+    "Smaller dimensions (256, 512) are faster but may be less accurate",
+    "Larger dimensions (1024, 1536) are slower but more accurate",
+    "Titan v1 only supports 1536 dimensions",
+    "Titan v2 supports 256, 512, and 1024 dimensions"
+  ]
+}
